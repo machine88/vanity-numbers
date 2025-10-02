@@ -1,0 +1,68 @@
+{
+  "Version": "2019-10-30",
+  "StartAction": "start",
+  "Metadata": {
+    "entryPointPosition": {"x": 10, "y": 10},
+    "snapToGrid": true,
+    "Name": "vanity-numbers-flow",
+    "Description": "Invokes Lambda to get vanity options and speaks top 3"
+  },
+  "Actions": [
+    {
+      "Identifier": "start",
+      "Type": "Start",
+      "Transitions": {
+        "NextAction": "invoke-vanity",
+        "Errors": []
+      }
+    },
+    {
+      "Identifier": "invoke-vanity",
+      "Type": "InvokeLambdaFunction",
+      "Parameters": {
+        "LambdaFunctionARN": "__LAMBDA_ARN__",
+        "InvocationTimeLimitSeconds": 5,
+        "RequestAttributes": {}
+      },
+      "Transitions": {
+        "NextAction": "speak-results",
+        "Errors": [
+          { "ErrorType": "NoMatchingError", "NextAction": "fallback" },
+          { "ErrorType": "InvalidLambdaResponse", "NextAction": "fallback" },
+          { "ErrorType": "LambdaServiceError", "NextAction": "fallback" },
+          { "ErrorType": "LambdaThrottling", "NextAction": "fallback" },
+          { "ErrorType": "LambdaUnknown", "NextAction": "fallback" }
+        ]
+      }
+    },
+    {
+      "Identifier": "speak-results",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "Here are your vanity options: $.External.option1, $.External.option2, and $.External.option3."
+      },
+      "Transitions": {
+        "NextAction": "disconnect",
+        "Errors": [
+          { "ErrorType": "NoMatchingError", "NextAction": "fallback" }
+        ]
+      }
+    },
+    {
+      "Identifier": "fallback",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "Sorry, I couldn't compute vanity options right now. Please try again later."
+      },
+      "Transitions": {
+        "NextAction": "disconnect",
+        "Errors": []
+      }
+    },
+    {
+      "Identifier": "disconnect",
+      "Type": "Disconnect",
+      "Transitions": { "Errors": [] }
+    }
+  ]
+}

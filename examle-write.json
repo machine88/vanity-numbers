@@ -1,0 +1,10 @@
+{
+  "pk": "CALLER#+13035551234",
+  "sk": "TS#2025-09-30T20:15:03.123Z",
+  "caller_number": "+13035551234",
+  "created_at": "2025-09-30T20:15:03.123Z",
+  "vanity_candidates": ["303-555-FLOWERS","303-555-TAXI","..."],
+  "raw": [
+    {"display":"303-555-FLOWERS","score":88.5,"letters":"FLOWERS"}
+  ]
+}

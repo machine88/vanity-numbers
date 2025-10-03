@@ -10,6 +10,7 @@ resource "aws_lambda_function" "vanity" {
   function_name = "${var.project_name}-vanity"
   role          = aws_iam_role.vanity_role.arn
 
+
   # built artifact produced by your build step
   filename         = "${path.module}/../build/lambda_vanity.zip"
   handler          = "app.handler.handler"

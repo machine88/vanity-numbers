@@ -1,55 +1,41 @@
-import os, json, boto3
-from decimal import Decimal
-from aws_lambda_powertools import Logger, Tracer, Metrics
-from aws_lambda_powertools.metrics import MetricUnit
+# api_handler.py
+import os
+import boto3
+from boto3.dynamodb.conditions import Key
+from aws_lambda_powertools import Logger
 
-logger  = Logger(service="vanity-api")
-tracer  = Tracer(service="vanity-api")
-metrics = Metrics(namespace="VanityConnect")
-
-DDB_TABLE = os.getenv("DDB_TABLE", "vanity-numbers-VanityCalls")
+logger = Logger(service="vanity-api")
+DDB_TABLE_NAME = os.getenv("DDB_TABLE", "vanity-numbers-VanityCalls")
 ddb = boto3.resource("dynamodb")
-table = ddb.Table(DDB_TABLE)
+table = ddb.Table(DDB_TABLE_NAME)
 
-CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "*",
-    "Access-Control-Allow-Methods": "GET,OPTIONS",
-}
-
-def _jsonable(o):
-    if isinstance(o, Decimal):
-        # choose float or str; float is fine if you don’t need exact precision
-        return float(o)
-    raise TypeError
-
-def _ok(body):
-    return {"statusCode": 200, "headers": CORS_HEADERS, "body": json.dumps(body, default=_jsonable)}
-
-def _no_content():
-    return {"statusCode": 204, "headers": CORS_HEADERS}
-
-@tracer.capture_lambda_handler
-@logger.inject_lambda_context
-@metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event, context):
-    method = (event.get("requestContext", {}).get("http", {}).get("method")
-              or event.get("httpMethod"))
-    if method == "OPTIONS":
-        return _no_content()
-
-    # ---- your existing "last 5" read logic ----
-    # Example: scan last 5 (replace with your real query)
-    resp = table.scan(Limit=5)
-    items = [
-        {
-            "caller_number": it.get("caller_number", ""),
-            "created_at": it.get("created_at", ""),
-            "vanity_candidates": it.get("vanity_candidates", []),
+    try:
+        # newest first, exactly 5
+        resp = table.query(
+            KeyConditionExpression=Key("pk").eq("RECENT"),
+            ScanIndexForward=False,   # descending by sk
+            Limit=5,
+            ConsistentRead=True
+        )
+        items = resp.get("Items", [])
+        out = [
+            {
+                "caller": it["caller_number"],
+                "created_at": it["created_at"],
+                "top3": (it.get("vanity_candidates") or [])[:3]
+            }
+            for it in items
+        ]
+        return {
+            "statusCode": 200,
+            "headers": {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": event.get("headers", {}).get("origin", "*"),
+                "Access-Control-Allow-Credentials": "true",
+            },
+            "body": __import__("json").dumps({"items": out})
         }
-        for it in resp.get("Items", [])
-    ]
-    # -------------------------------------------
-
-    metrics.add_metric("ApiLast5Requests", MetricUnit.Count, 1)
-    return _ok(items)
+    except Exception:
+        logger.exception("API error")
+        return {"statusCode": 500, "body": '{"message":"Internal Server Error"}'}

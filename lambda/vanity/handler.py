@@ -4,16 +4,13 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List
 from decimal import Decimal
 
-
 import boto3
 from aws_lambda_powertools import Logger, Tracer, Metrics
 from aws_lambda_powertools.metrics import MetricUnit
 
-from .model import VanityCandidate, response_for_connect
+from .model import VanityCandidate
 from .vanity import vanity_candidates, WORDS
 
-
-# Observability setup (no fragile correlation_paths constant)
 logger  = Logger(service="vanity-processor")
 tracer  = Tracer(service="vanity-processor")
 metrics = Metrics(namespace="VanityConnect")
@@ -44,7 +41,6 @@ def _normalize_e164(raw: str) -> str:
     return f"+{d}"
 
 def _dec(x):
-    """Convert floats to Decimal for DynamoDB, recurse into lists/dicts."""
     if isinstance(x, float):
         return Decimal(str(x))
     if isinstance(x, dict):
@@ -54,22 +50,31 @@ def _dec(x):
     return x
 
 def _put_record(caller_e164: str, top5: List[VanityCandidate]) -> None:
+    """Write (a) per-caller item and (b) a RECENT item for global 'last 5 calls'."""
     ts = datetime.now(timezone.utc).isoformat()
+    common = {
+        "caller_number": caller_e164,
+        "created_at": ts,
+        "vanity_candidates": [c.display for c in top5],
+        "raw": [
+            {"display": c.display, "score": _dec(c.score), "letters": c.raw_letters}
+            for c in top5
+        ],
+    }
+    # a) per-caller timeline
     table.put_item(
         Item={
             "pk": f"CALLER#{caller_e164}",
             "sk": f"TS#{ts}",
-            "caller_number": caller_e164,
-            "created_at": ts,
-            "vanity_candidates": [c.display for c in top5],
-            "raw": [
-                {
-                    "display": c.display,
-                    "score": _dec(c.score),
-                    "letters": c.raw_letters,
-                }
-                for c in top5
-            ],
+            **common,
+        }
+    )
+    # b) global recent timeline (enables fast 'last 5 calls' query)
+    table.put_item(
+        Item={
+            "pk": "RECENT",
+            "sk": f"TS#{ts}",
+            **common,
         }
     )
 
@@ -77,7 +82,6 @@ def _put_record(caller_e164: str, top5: List[VanityCandidate]) -> None:
 @logger.inject_lambda_context
 @metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event: Dict[str, Any], context):
-    # Correlate with Connect ContactId if present (don’t crash if missing)
     contact_id = (
         event.get("Details", {})
              .get("ContactData", {})
@@ -87,7 +91,7 @@ def handler(event: Dict[str, Any], context):
         logger.set_correlation_id(contact_id)
 
     try:
-        # 1) Extract caller number (Connect or test)
+        # Get caller number
         if "Details" in event and "ContactData" in event["Details"]:
             caller_raw = event["Details"]["ContactData"]["CustomerEndpoint"]["Address"]
         else:
@@ -97,38 +101,40 @@ def handler(event: Dict[str, Any], context):
         if not e164:
             logger.warning("No valid caller number", extra={"caller_raw": caller_raw})
             metrics.add_metric("InvalidCallerNumber", MetricUnit.Count, 1)
-            # Return empty, but keep both shapes for safety
             return {"option1": "", "option2": "", "option3": "", "prompt_ssml": ""}
 
-        # 2) Generate candidates
+        # Generate candidates
         with tracer.provider.in_subsegment("generate_candidates") as sub:
             all_cands = vanity_candidates(e164, max_letters=7)
             for c in all_cands:
                 c.display = _format_display(e164, c.raw_letters)  # type: ignore[attr-defined]
-            all_cands.sort(key=lambda c: c.score, reverse=True)
+            # Prefer real words first, then score
+            def sort_key(c: VanityCandidate):
+                is_word = 1 if c.raw_letters.upper() in WORDS else 0
+                return (is_word, c.score)
+            all_cands.sort(key=sort_key, reverse=True)
             top5 = all_cands[:5]
             sub.put_annotation("candidate_count", len(all_cands))
             sub.put_metadata("top5", [c.display for c in top5])
 
-        # 3) Persist to DynamoDB
+        # Persist
         try:
             _put_record(e164, top5)
         except Exception:
             logger.exception("Failed to persist call record")
             metrics.add_metric("DdbWriteErrors", MetricUnit.Count, 1)
 
-        # 4) Metrics
+        # Metrics
         matched_words = sum(1 for c in top5 if c.raw_letters.upper() in WORDS)
         metrics.add_dimension("env", ENV)
         metrics.add_dimension("service", "vanity-processor")
         metrics.add_metric("CallsProcessed", MetricUnit.Count, 1)
         metrics.add_metric("Top5MatchedWords", MetricUnit.Count, matched_words)
 
-        # 5) Prepare outputs (robust to <3 candidates)
-        safe = [c.display for c in top5] + [""] * 3
-        o1, o2, o3 = safe[0], safe[1], safe[2]
+        # Prepare output
+        safe = ([c.display for c in top5] + ["", "", ""])[:3]
+        o1, o2, o3 = safe
 
-        # Build compact SSML (no indentation/newlines issues)
         prompt_ssml = (
             "<speak>"
             "Here are your vanity options:"
@@ -142,14 +148,7 @@ def handler(event: Dict[str, Any], context):
         )
 
         logger.info("Call processed", extra={"caller_e164": e164, "top3": [o1, o2, o3]})
-
-        # Return BOTH shapes:
-        return {
-            "option1": o1,
-            "option2": o2,
-            "option3": o3,
-            "prompt_ssml": prompt_ssml,
-        }
+        return {"option1": o1, "option2": o2, "option3": o3, "prompt_ssml": prompt_ssml}
 
     except Exception:
         logger.exception("Unhandled error")

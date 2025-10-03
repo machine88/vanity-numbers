@@ -3,7 +3,10 @@ resource "aws_lambda_function" "api_last5" {
   function_name = "${var.project_name}-api-last5"
   role          = aws_iam_role.api_role.arn
   filename      = "./../build/lambda_api.zip"
+
+  # FIX: the file in the zip is at the root (api_handler.py)
   handler       = "api_handler.handler"
+
   runtime       = "python3.12"
   architectures = ["arm64"]
   timeout       = 5

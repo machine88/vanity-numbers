@@ -39,6 +39,55 @@ flowchart LR
     ApiLambda -.-> Metrics
   end
  ``` 
+```mermaid
+flowchart LR
+  subgraph Client["User"]
+    Browser["Static Web App (HTML/JS)"]
+    Caller["Phone Caller"]
+  end
+
+  subgraph Edge["AWS Edge"]
+    CF[CloudFront<br/>+ OAC]
+  end
+
+  subgraph Web["Static Hosting"]
+    S3Web[S3 Website Bucket<br/>index.html, app.js, assets]
+  end
+
+  subgraph API["API Layer"]
+    APIGW[API Gateway HTTP API<br/>/last5]
+    LambdaAPI[Lambda: vanity-numbers-api-last5]
+  end
+
+  subgraph Data["Data Store"]
+    DDB[(DynamoDB: VanityCalls<br/>pk=RECENT, sk=TS#...)]
+  end
+
+  subgraph Compute["Compute (vanity lookup)"]
+    LambdaVanity[Lambda: vanity-numbers-vanity<br/>handler=app.handler.handler]
+    Words[(Wordlist in ZIP<br/>app/words_4_7.jsonl.gz)]
+  end
+
+  subgraph CCX["Contact Center (optional path)"]
+    Connect[Amazon Connect<br/>Contact Flow]
+  end
+
+  %% Edges
+  Browser -- "GET /, /app.js" --> CF
+  CF -- "origin: S3 (private via OAC)" --> S3Web
+
+  Browser -- "GET /last5" --> CF
+  CF -- "origin: API Gateway (no cache or short TTL)" --> APIGW
+  APIGW --> LambdaAPI --> DDB
+
+  Caller -- "Phone call" --> Connect
+  Connect -- "Invoke Lambda (AWS SDK)" --> LambdaVanity
+  LambdaVanity --> Words
+  LambdaVanity --> DDB
+
+  %% Return paths
+  DDB -. "query recent" .-> LambdaAPI -. "JSON {items:[...]}" .-> APIGW -.-> CF -.-> Browser
+```
 
 ## “Best” Vanity (Scoring)
 - Prefer longest trailing real word (e.g., `FLOWERS` over `FLOW`).

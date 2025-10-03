@@ -1,0 +1,4 @@
+# Example values — replace with your own AWS Connect instance + phone number
+connect_instance_id = "YOUR_CONNECT_INSTANCE_ID"
+phone_number_id     = "YOUR_PHONE_NUMBER_ID"
+contact_flow_id     = "YOUR_CONTACT_FLOW_ID" # only if re-attaching

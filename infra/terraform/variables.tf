@@ -9,13 +9,6 @@ variable "project_name" {
   default     = "vanity-numbers"
 }
 
-# AWS region to deploy all resources
-variable "region" {
-  type        = string
-  description = "AWS region to deploy into"
-  default     = "us-west-2"
-}
-
 # Environment label for tags/metrics (e.g., dev/staging/prod)
 variable "env" {
   type        = string
@@ -23,17 +16,43 @@ variable "env" {
   default     = "dev"
 }
 
-# Your Amazon Connect instance ID (not the ARN).
-# Find it in the Amazon Connect console: the Instance ARN ends with /instance/<INSTANCE_ID>
-variable "connect_instance_id" {
-  type        = string
-  description = "Amazon Connect Instance ID to associate the Lambda and create the contact flow"
-}
-
-# Toggle for deploying the bonus web app (S3 static site + API).
-# If you prefer to always include it, leave default = true.
+# Toggle for deploying the bonus web app (S3 static site + API)
 variable "enable_bonus_webapp" {
   type        = bool
   description = "Whether to provision the S3 static website for the bonus web app"
   default     = true
+}
+
+# AWS CLI/SDK profile
+variable "aws_profile" {
+  description = "AWS CLI/SDK profile name to use"
+  type        = string
+  default     = "AdministratorAccess-653464153304"
+}
+
+variable "region" {
+  description = "AWS region for all resources"
+  type        = string
+  default     = "us-west-2"
+}
+
+variable "connect_instance_id" {
+  description = "Amazon Connect instance ID"
+  type        = string
+}
+
+variable "phone_number_id" {
+  description = "Amazon Connect phone number ID"
+  type        = string
+}
+
+variable "vanity_lambda_arn" {
+  description = "ARN of the vanity Lambda function to be invoked by Connect"
+  type        = string
+}
+
+variable "contact_flow_json_path" {
+  description = "Relative path (from infra/terraform/) to the Connect flow JSON file."
+  type        = string
+  default     = "../../connect/vanity-contact-flow.json"
 }

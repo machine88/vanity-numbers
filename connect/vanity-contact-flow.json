@@ -2,10 +2,10 @@
   "Version": "2019-10-30",
   "StartAction": "start",
   "Metadata": {
-    "entryPointPosition": {"x": 10, "y": 10},
+    "entryPointPosition": { "x": 10, "y": 10 },
     "snapToGrid": true,
     "Name": "vanity-numbers-flow",
-    "Description": "Invokes Lambda to get vanity options and speaks top 3"
+    "Description": "Invoke Lambda to get vanity options and speak top 3"
   },
   "Actions": [
     {
@@ -20,18 +20,18 @@
       "Identifier": "invoke-vanity",
       "Type": "InvokeLambdaFunction",
       "Parameters": {
-        "LambdaFunctionARN": "__LAMBDA_ARN__",
+        "LambdaFunctionARN": "${lambda_arn}",
         "InvocationTimeLimitSeconds": 5,
         "RequestAttributes": {}
       },
       "Transitions": {
         "NextAction": "speak-results",
         "Errors": [
-          { "ErrorType": "NoMatchingError", "NextAction": "fallback" },
           { "ErrorType": "InvalidLambdaResponse", "NextAction": "fallback" },
-          { "ErrorType": "LambdaServiceError", "NextAction": "fallback" },
-          { "ErrorType": "LambdaThrottling", "NextAction": "fallback" },
-          { "ErrorType": "LambdaUnknown", "NextAction": "fallback" }
+          { "ErrorType": "NoMatchingError",         "NextAction": "fallback" },
+          { "ErrorType": "LambdaServiceError",      "NextAction": "fallback" },
+          { "ErrorType": "LambdaThrottling",        "NextAction": "fallback" },
+          { "ErrorType": "LambdaUnknown",           "NextAction": "fallback" }
         ]
       }
     },

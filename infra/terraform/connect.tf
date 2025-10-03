@@ -1,42 +1,49 @@
-##############################
-# Amazon Connect: Contact Flow
-##############################
+############################################
+# Connect: manage the existing flow by ID
+############################################
+locals {
+  contact_flow_json = "${path.module}/${var.contact_flow_json_path}"
+}
 
-# NOTE: This resource ONLY creates a contact flow from a known-good JSON file.
-# Do not add data sources or locals here to avoid duplicate definitions.
-
-resource "aws_connect_contact_flow" "vanity_flow" {
-  name        = "${var.project_name}-flow-from-file"
-  description = "Contact flow created from a known-good JSON file"
-  instance_id     = var.connect_instance_id
+# IMPORTANT: we render your JSON and inject the Lambda ARN
+resource "aws_connect_contact_flow" "verify_flow" {
+  name        = "vanity-numbers-flow-tf"
+  description = "Invoke Lambda to get vanity options and speak top 3"
+  instance_id = var.connect_instance_id
   type        = "CONTACT_FLOW"
+  region      = var.region
 
-  # Use the JSON you exported: infra/terraform/contact_flow_valid.json
-  content = file("${path.module}/contact_flow_valid.json")
+  # however you currently set content (file/templatefile/etc.)
+  content = templatefile(local.contact_flow_json, {
+    lambda_arn = var.vanity_lambda_arn
+  })
 
-  tags = {
-    Project = var.project_name
-    Env     = var.env
+  # 👇 add this to prevent Terraform from updating the JSON in Connect
+  lifecycle {
+    ignore_changes = [content]
   }
 }
 
-resource "aws_connect_phone_number" "vanity_number" {
-  # REQUIRED for the resource schema
-  target_arn   = "arn:aws:connect:${var.region}:${data.aws_caller_identity.current.account_id}:instance/${var.connect_instance_id}"
-  type         = "DID"
-  country_code = "US"
-
-  # DO NOT set phone_number here — it’s computed for imported numbers
+# Allow the Connect instance to invoke the Lambda
+resource "aws_lambda_permission" "allow_connect_invoke" {
+  statement_id  = "AllowExecutionFromAmazonConnect"
+  action        = "lambda:InvokeFunction"
+  function_name = var.vanity_lambda_arn
+  principal     = "connect.amazonaws.com"
+  source_arn    = "arn:aws:connect:${var.region}:${data.aws_caller_identity.current.account_id}:instance/${var.connect_instance_id}"
 }
 
-resource "aws_connect_phone_number_contact_flow_association" "vanity_assoc" {
-  instance_id     = var.connect_instance_id
-  phone_number_id = aws_connect_phone_number.vanity_number.id
-  contact_flow_id = split(":", aws_connect_contact_flow.vanity_flow.id)[1]
-}
-
+# Associate the Lambda function with the Connect instance (required once per instance)
 resource "aws_connect_lambda_function_association" "vanity_assoc" {
   instance_id  = var.connect_instance_id
-  function_arn = aws_lambda_function.vanity.arn
+  function_arn = var.vanity_lambda_arn
   region       = var.region
+}
+
+# Point your phone number at this flow
+resource "aws_connect_phone_number_contact_flow_association" "verify_number_assoc" {
+  instance_id     = var.connect_instance_id
+  phone_number_id = var.phone_number_id
+  contact_flow_id = aws_connect_contact_flow.verify_flow.contact_flow_id
+  region          = var.region
 }

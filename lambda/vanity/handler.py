@@ -1,156 +1,222 @@
-# app/handler.py
-import os, re
+from __future__ import annotations
+
+import os
+import re
+import json
+import logging
 from datetime import datetime, timezone
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 from decimal import Decimal
 
 import boto3
-from aws_lambda_powertools import Logger, Tracer, Metrics
-from aws_lambda_powertools.metrics import MetricUnit
+from app.vanity import vanity_candidates
 
-from .model import VanityCandidate
-from .vanity import vanity_candidates, WORDS
+# ---------- logging ----------
+log = logging.getLogger(__name__)
+if not log.handlers:
+    logging.basicConfig(level=logging.INFO)
 
-logger  = Logger(service="vanity-processor")
-tracer  = Tracer(service="vanity-processor")
-metrics = Metrics(namespace="VanityConnect")
+# ---------- aws resources ----------
+DDB_TABLE_NAME = os.environ.get("DDB_TABLE", "")
+_dynamo = boto3.resource("dynamodb") if DDB_TABLE_NAME else None
+table = _dynamo.Table(DDB_TABLE_NAME) if _dynamo else None
 
-DDB_TABLE_NAME = os.getenv("DDB_TABLE", "vanity-numbers-VanityCalls")
-ENV = os.getenv("ENV", "dev")
-ddb = boto3.resource("dynamodb")
-table = ddb.Table(DDB_TABLE_NAME)
+# ---------- T9 helpers for deterministic fallbacks ----------
+T9 = {
+    "2": "ABC", "3": "DEF",
+    "4": "GHI", "5": "JKL", "6": "MNO",
+    "7": "PQRS", "8": "TUV", "9": "WXYZ",
+}
 
-def _digits_blocks(e164: str) -> Dict[str, str]:
-    d = re.sub(r"\D", "", e164)
+
+def _digits_only(s: str) -> str:
+    return "".join(ch for ch in s if s and ch.isdigit())
+
+
+def _fallback_letters(digits: str, n: int) -> str:
+    """Deterministic T9 letters for last n digits: first letter from each mapping."""
+    last = digits[-n:]
+    out: List[str] = []
+    for d in last:
+        if d in T9:
+            out.append(T9[d][0])  # deterministic first choice
+        elif d == "0":
+            out.append("O")
+        elif d == "1":
+            out.append("I")
+        else:
+            out.append(d)
+    return "".join(out)
+
+
+# ---------- e164 normalization (referenced by tests) ----------
+_E164 = re.compile(r"^\+?\d+$")
+
+
+def normalize_e164(s: str) -> str:
+    """
+    Best-effort normalize to +1XXXXXXXXXX style (US-centric for this exercise).
+    Matches your tests exactly.
+    """
+    if not s:
+        return "+1"
+
+    digs = "".join(ch for ch in s if ch.isdigit())
+
+    if s.startswith("+") and _E164.match(s):
+        return s
+
+    if len(digs) == 11 and digs[0] == "1":
+        return f"+{digs}"
+
+    if len(digs) == 10:
+        return f"+1{digs}"
+
+    if len(digs) == 7:
+        return f"+1{digs}"
+
+    return f"+{digs}" if digs else "+1"
+
+
+# ---------- display & ssml formatting ----------
+def _format_display(e164: str, letters: str) -> str:
+    """Format like 303-555-FLOWERS (or with 4–7 letter tails)."""
+    if not letters:
+        return ""
+    d = _digits_only(e164)
+
     if len(d) >= 10:
-        return {"area": d[-10:-7], "prefix": d[-7:-4], "line": d[-4:]}
-    return {"area": "", "prefix": "", "line": d[-4:]}
+        area, mid = d[-10:-7], d[-7:-4]
+        return f"{area}-{mid}-{letters}"
 
-def _format_display(e164: str, letters_suffix: str) -> str:
-    p = _digits_blocks(e164)
-    if p["area"] and p["prefix"]:
-        return f"{p['area']}-{p['prefix']}-{letters_suffix.upper()}"
-    d = re.sub(r"\D", "", e164)
-    return f"{d}-{letters_suffix.upper()}" if d else letters_suffix.upper()
+    if len(d) >= 7:
+        return f"{d[-7:-4]}-{d[-4:]}-{letters}"
 
-def _normalize_e164(raw: str) -> str:
-    d = re.sub(r"\D", "", raw or "")
-    if not d: return ""
-    if len(d) == 11 and d.startswith("1"): return f"+{d}"
-    if len(d) == 10: return f"+1{d}"
-    return f"+{d}"
+    return f"{d}-{letters}" if d else letters
 
-def _dec(x):
-    if isinstance(x, float):
-        return Decimal(str(x))
-    if isinstance(x, dict):
-        return {k: _dec(v) for k, v in x.items()}
-    if isinstance(x, list):
-        return [_dec(v) for v in x]
-    return x
 
-def _put_record(caller_e164: str, top5: List[VanityCandidate]) -> None:
-    """Write (a) per-caller item and (b) a RECENT item for global 'last 5 calls'."""
-    ts = datetime.now(timezone.utc).isoformat()
-    common = {
-        "caller_number": caller_e164,
-        "created_at": ts,
-        "vanity_candidates": [c.display for c in top5],
-        "raw": [
-            {"display": c.display, "score": _dec(c.score), "letters": c.raw_letters}
-            for c in top5
-        ],
-    }
-    # a) per-caller timeline
-    table.put_item(
-        Item={
-            "pk": f"CALLER#{caller_e164}",
-            "sk": f"TS#{ts}",
-            **common,
-        }
-    )
-    # b) global recent timeline (enables fast 'last 5 calls' query)
-    table.put_item(
-        Item={
-            "pk": "RECENT",
-            "sk": f"TS#{ts}",
-            **common,
-        }
-    )
+def _build_ssml(displays: List[str]) -> str:
+    spoken = [f'<say-as interpret-as="characters">{disp}</say-as>' for disp in displays if disp]
+    parts = ['<speak>Here are your vanity options:']
+    for s in spoken:
+        parts.append('<break time="250ms"/>')
+        parts.append(s)
+    parts.append('.</speak>')
+    return "".join(parts)
 
-@tracer.capture_lambda_handler
-@logger.inject_lambda_context
-@metrics.log_metrics(capture_cold_start_metric=True)
-def handler(event: Dict[str, Any], context):
-    contact_id = (
-        event.get("Details", {})
-             .get("ContactData", {})
-             .get("ContactId")
-    )
-    if contact_id:
-        logger.set_correlation_id(contact_id)
+
+# ---------- event parsing ----------
+def _extract_phone(event: Dict[str, Any]) -> str:
+    """
+    Accepts either:
+      {"phone": "+1..."}
+    or Amazon Connect:
+      {"Details":{"ContactData":{"CustomerEndpoint":{"Address":"+1..."}}}}
+    """
+    phone = event.get("phone")
+    if phone:
+        return normalize_e164(phone)
 
     try:
-        # Get caller number
-        if "Details" in event and "ContactData" in event["Details"]:
-            caller_raw = event["Details"]["ContactData"]["CustomerEndpoint"]["Address"]
-        else:
-            caller_raw = event.get("phone", "")
-
-        e164 = _normalize_e164(caller_raw)
-        if not e164:
-            logger.warning("No valid caller number", extra={"caller_raw": caller_raw})
-            metrics.add_metric("InvalidCallerNumber", MetricUnit.Count, 1)
-            return {"option1": "", "option2": "", "option3": "", "prompt_ssml": ""}
-
-        # Generate candidates
-        with tracer.provider.in_subsegment("generate_candidates") as sub:
-            all_cands = vanity_candidates(e164, max_letters=7)
-            for c in all_cands:
-                c.display = _format_display(e164, c.raw_letters)  # type: ignore[attr-defined]
-            # Prefer real words first, then score
-            def sort_key(c: VanityCandidate):
-                is_word = 1 if c.raw_letters.upper() in WORDS else 0
-                return (is_word, c.score)
-            all_cands.sort(key=sort_key, reverse=True)
-            top5 = all_cands[:5]
-            sub.put_annotation("candidate_count", len(all_cands))
-            sub.put_metadata("top5", [c.display for c in top5])
-
-        # Persist
-        try:
-            _put_record(e164, top5)
-        except Exception:
-            logger.exception("Failed to persist call record")
-            metrics.add_metric("DdbWriteErrors", MetricUnit.Count, 1)
-
-        # Metrics
-        matched_words = sum(1 for c in top5 if c.raw_letters.upper() in WORDS)
-        metrics.add_dimension("env", ENV)
-        metrics.add_dimension("service", "vanity-processor")
-        metrics.add_metric("CallsProcessed", MetricUnit.Count, 1)
-        metrics.add_metric("Top5MatchedWords", MetricUnit.Count, matched_words)
-
-        # Prepare output
-        safe = ([c.display for c in top5] + ["", "", ""])[:3]
-        o1, o2, o3 = safe
-
-        prompt_ssml = (
-            "<speak>"
-            "Here are your vanity options:"
-            "<break time=\"150ms\"/>"
-            f"<say-as interpret-as=\"characters\">{o1}</say-as>,"
-            "<break time=\"250ms\"/>"
-            f"<say-as interpret-as=\"characters\">{o2}</say-as>,"
-            "<break time=\"250ms\"/>"
-            f"and <say-as interpret-as=\"characters\">{o3}</say-as>."
-            "</speak>"
+        addr = (
+            event.get("Details", {})
+            .get("ContactData", {})
+            .get("CustomerEndpoint", {})
+            .get("Address")
         )
-
-        logger.info("Call processed", extra={"caller_e164": e164, "top3": [o1, o2, o3]})
-        return {"option1": o1, "option2": o2, "option3": o3, "prompt_ssml": prompt_ssml}
-
+        if addr:
+            return normalize_e164(addr)
     except Exception:
-        logger.exception("Unhandled error")
-        metrics.add_metric("Errors", MetricUnit.Count, 1)
-        return {"option1": "", "option2": "", "option3": "", "prompt_ssml": ""}
+        pass
+
+    try:
+        s = json.dumps(event)
+        m = re.search(r"\+\d{7,}", s)
+        if m:
+            return normalize_e164(m.group(0))
+    except Exception:
+        pass
+
+    return "+1"
+
+
+# ---------- ddb write ----------
+def _write_recent(e164: str, displays: List[str], scored_raw: List[tuple[str, float]]) -> None:
+    """
+    Store the latest call in the schema the API and web expect.
+    Schema example:
+      pk: "RECENT"
+      sk: "TS#2025-10-03T21:07:59.123456+00:00"
+      caller_number: "+15555551234"
+      created_at: ISO-8601 string
+      vanity_candidates: ["303-555-FLOWERS","303-555-FLOWE","303-555-FLOW"]
+      raw: [
+        {"letters":"FLOWERS","display":"303-555-FLOWERS","score":7.2},
+        {"letters":"FLOWE",  "display":"303-555-FLOWE",  "score":5.0},
+        {"letters":"FLOW",   "display":"303-555-FLOW",   "score":4.0},
+      ]
+    """
+    if not table:
+        log.info("No DDB table configured; skipping put_item")
+        return
+
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        item = {
+            "pk": "RECENT",
+            "sk": f"TS#{now}",
+            "caller_number": e164,
+            "created_at": now,
+            # FIX: keep exactly 3 slots, even if some are fallback/empty
+            "vanity_candidates": displays[:3],
+            "raw": [
+                {"letters": letters, "display": disp, "score": Decimal(str(score))}
+                for (letters, score), disp in zip(scored_raw, displays)
+                if disp
+            ],
+        }
+        log.info("Writing to DDB: %s", item)
+        table.put_item(Item=item)
+        log.info("Wrote item successfully")
+    except Exception as e:
+        log.warning("Failed to write recent to DDB: %s", e)
+
+
+# ---------- main lambda ----------
+def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    log.debug("event: %s", event)
+    e164 = _extract_phone(event)
+    digits = _digits_only(e164)
+
+    # 1) curated lexicon matches (best-first)
+    cands = vanity_candidates(e164, max_letters=7)
+    letters: List[str] = [c.raw_letters for c in cands[:3] if c and c.raw_letters]
+
+    # 2) ensure 3 options via deterministic fallbacks
+    if len(letters) < 3:
+        for n in (5, 4):
+            if len(letters) >= 3:
+                break
+            if len(digits) >= n:
+                letters.append(_fallback_letters(digits, n))
+    while len(letters) < 3:
+        letters.append("")
+
+    # 3) build displays + SSML (skip empties in SSML)
+    displays = [_format_display(e164, L) if L else "" for L in letters]
+    ssml = _build_ssml(displays)
+
+    # Build scored_raw alongside (use 0.0 if letter came from fallback)
+    # cands already sorted best-first; align letters->score
+    score_by_letters = {c.raw_letters: c.score for c in cands[:3]}
+    scored_raw = [(L, score_by_letters.get(L, 0.0)) for L in letters]
+
+    # 4) best-effort DDB write (correct schema & all three options)
+    _write_recent(e164, displays[:3], scored_raw)
+
+    return {
+        "option1": displays[0],
+        "option2": displays[1],
+        "option3": displays[2],
+        "prompt_ssml": ssml,
+    }

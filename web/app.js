@@ -1,18 +1,21 @@
 // web/app.js
 (() => {
-  const API_PATH = "/last5"; // goes CloudFront -> API Gateway
+  const API_PATH = "/last5"; // CloudFront -> API Gateway
 
   const $status  = document.getElementById("status");
   const $results = document.getElementById("results");
 
   function fmtWhen(iso) {
+    if (!iso) return "";
     try {
       const d = new Date(iso);
-      const opts = { year: 'numeric', month: 'short', day: 'numeric',
-                     hour: 'numeric', minute: '2-digit' };
+      const opts = {
+        year: "numeric", month: "short", day: "numeric",
+        hour: "numeric", minute: "2-digit"
+      };
       return d.toLocaleString(undefined, opts);
     } catch {
-      return iso || "";
+      return iso;
     }
   }
 
@@ -33,10 +36,11 @@
     const $left = document.createElement("div");
     const $who  = document.createElement("div");
     $who.className = "who";
-    $who.textContent = item.caller_number || "Unknown";
+    $who.textContent = item.caller || item.caller_number || "Unknown";
+
     const $time = document.createElement("div");
     $time.className = "time";
-    $time.textContent = fmtWhen(item.created_at || "");
+    $time.textContent = fmtWhen(item.created_at || item.time || "");
 
     $left.appendChild($who);
     $left.appendChild($time);
@@ -44,7 +48,17 @@
     const $right = document.createElement("div");
     $right.className = "pills";
 
-    const cands = Array.isArray(item.vanity_candidates) ? item.vanity_candidates.slice(0, 3) : [];
+    // Prefer API shape: items[].top3
+    let cands = [];
+    if (Array.isArray(item.top3) && item.top3.length) {
+      cands = item.top3.filter(Boolean).slice(0, 3);
+    } else if (Array.isArray(item.vanity_candidates) && item.vanity_candidates.length) {
+      // backward compat
+      cands = item.vanity_candidates.filter(Boolean).slice(0, 3);
+    } else if (Array.isArray(item.raw)) {
+      // very old shape: [{display: "..."}]
+      cands = item.raw.map(r => r && r.display).filter(Boolean).slice(0, 3);
+    }
 
     $right.appendChild(pill(cands[0] || "", "Top match"));
     $right.appendChild(pill(cands[1] || "", "Option 2"));
@@ -57,25 +71,15 @@
 
   async function load() {
     try {
+      $status.textContent = "Loading…";
       const r = await fetch(API_PATH, { headers: { "Accept": "application/json" } });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
 
-      // The API is Lambda-proxy shaped: { statusCode, headers, body: "<json string>" }
-      const raw = await r.json();
-      const payload = typeof raw?.body === "string" ? JSON.parse(raw.body) : raw;
-
-      // Normalize to what the renderer expects
-      const items = (Array.isArray(payload?.items) ? payload.items
-                      : Array.isArray(payload) ? payload
-                      : [])
-        .map(it => ({
-          caller_number: it.caller || it.caller_number || "Unknown",
-          created_at: it.created_at || it.createdAt || it.ts || "",
-          // map top3 -> vanity_candidates
-          vanity_candidates: Array.isArray(it.top3) ? it.top3
-                            : Array.isArray(it.vanity_candidates) ? it.vanity_candidates
-                            : [],
-        }));
+      // normalize to an array
+      const items = Array.isArray(data?.items) ? data.items
+                   : Array.isArray(data)       ? data
+                   : [];
 
       // newest → oldest
       items.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
@@ -87,12 +91,23 @@
       $badge.innerHTML = '<span class="dot"></span> Updated just now';
       $results.appendChild($badge);
 
-      items.slice(0, 5).forEach(i => $results.appendChild(row(i)));
+      const show = items.slice(0, 5);
+      if (!show.length) {
+        const $empty = document.createElement("div");
+        $empty.className = "empty";
+        $empty.textContent = "No recent calls yet.";
+        $results.appendChild($empty);
+      } else {
+        show.forEach(i => $results.appendChild(row(i)));
+      }
+
+      $status.textContent = "";
     } catch (err) {
-      if ($status) $status.textContent = `Couldn't load recent calls (${err.message}).`;
+      $status.textContent = `Couldn't load recent calls (${err.message}).`;
     }
   }
 
   load();
-  // setInterval(load, 30000); // optional auto-refresh
+  // Optional periodic refresh:
+  // setInterval(load, 30000);
 })();

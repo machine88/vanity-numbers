@@ -53,6 +53,11 @@ rsync -a \
   --exclude 'tests' \
   "$VANITY_DIR/" "$TMP_VANITY/app/"
 
+# Ensure curated lexicon is included even if rsync rules change later
+if [[ -f "$ROOT_DIR/lambda/vanity/words_common.txt.gz" ]]; then
+  cp -f "$ROOT_DIR/lambda/vanity/words_common.txt.gz" "$TMP_VANITY/app/words_common.txt.gz"
+fi
+
 # Show what will be zipped (debug)
 msg "Vanity package staging contents:"
 ( cd "$TMP_VANITY" && find app -maxdepth 2 -print | sort )
@@ -60,18 +65,24 @@ msg "Vanity package staging contents:"
 # Zip it
 ( cd "$TMP_VANITY" && zip -qr "$BUILD_DIR/lambda_vanity.zip" . )
 
-# Verify (use zipinfo -1 for reliable single-column output)
-if unzip -Z1 "$BUILD_DIR/lambda_vanity.zip" | awk 'BEGIN{f=0} $0=="app/handler.py"{f=1} END{exit (f?0:1)}'; then
+# Verify critical files
+if unzip -Z1 "$BUILD_DIR/lambda_vanity.zip" | awk 'BEGIN{h=0} $0=="app/handler.py"{h=1} END{exit (h?0:1)}'; then
   msg "✓ vanity zip -> $BUILD_DIR/lambda_vanity.zip"
 else
   msg "ZIP listing:"
   unzip -Z1 "$BUILD_DIR/lambda_vanity.zip" | sed -n '1,200p'
   die "app/handler.py NOT found in ZIP — packaging failed"
 fi
-msg "✓ vanity zip -> $BUILD_DIR/lambda_vanity.zip"
+
+# Optional: show lexicon presence (non-fatal if you’re intentionally testing fallback)
+if unzip -Z1 "$BUILD_DIR/lambda_vanity.zip" | grep -q '^app/words_common.txt.gz$'; then
+  msg "✓ words_common.txt.gz included in vanity zip"
+else
+  msg "(!) words_common.txt.gz not found in zip (will use fallback/words_small if present)"
+fi
 
 # ========= API Lambda (optional) =========
-if [[ "$BUILD_API" == true ]]; then
+if [[ "$BUILD_API" == true ]] ; then
   msg "Building API Lambda package..."
   python3 -m pip install -q -r "$API_DIR/requirements.txt" -t "$TMP_API"
   rsync -a --exclude '__pycache__' --exclude '*.pyc' "$API_DIR/" "$TMP_API/"
@@ -85,6 +96,8 @@ if [[ "$BUILD_WEB" == true ]]; then
   rsync -av --delete site/ infra/build/site/
   cp -f "$WEB_DIR/index.html" "$SITE_DIR/index.html"
   cp -f "$WEB_DIR/app.js"     "$SITE_DIR/app.js"
+  #  to avoid 403s
+  [[ -f "$WEB_DIR/favicon.ico" ]] && cp -f "$WEB_DIR/favicon.ico" "$SITE_DIR/favicon.ico"
   msg "✓ site/ -> $SITE_DIR"
 fi
 
@@ -99,7 +112,7 @@ $([[ "$BUILD_API" == true ]] && echo "API Lambda zip    : $BUILD_DIR/lambda_api.
 $([[ "$BUILD_WEB" == true ]] && echo "Web site files    : $SITE_DIR/index.html, app.js")
 
 IMPORTANT:
-  • In Terraform for the vanity function set: handler = "app.handler"
+  • In Terraform for the vanity function set: handler = "app.handler.handler"
     (because the code is now inside the app/ package in the ZIP)
 
 Next:

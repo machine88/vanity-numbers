@@ -39,7 +39,8 @@
       "Identifier": "speak-results",
       "Type": "MessageParticipant",
       "Parameters": {
-        "Text": "Here are your vanity options: $.External.option1, $.External.option2, and $.External.option3."
+        "TextToSpeechType": "ssml",
+        "SSML": "{External.prompt_ssml}"
       },
       "Transitions": {
         "NextAction": "disconnect",
@@ -61,7 +62,7 @@
     },
     {
       "Identifier": "disconnect",
-      "Type": "Disconnect",
+      "Type": "DisconnectParticipant",
       "Transitions": { "Errors": [] }
     }
   ]

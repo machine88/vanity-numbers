@@ -97,45 +97,61 @@ def handler(event: Dict[str, Any], context):
         if not e164:
             logger.warning("No valid caller number", extra={"caller_raw": caller_raw})
             metrics.add_metric("InvalidCallerNumber", MetricUnit.Count, 1)
-            return {"option1": "", "option2": "", "option3": ""}
+            # Return empty, but keep both shapes for safety
+            return {"option1": "", "option2": "", "option3": "", "prompt_ssml": ""}
 
-        # 2) Generate candidates (guaranteed non-empty by vanity.py)
+        # 2) Generate candidates
         with tracer.provider.in_subsegment("generate_candidates") as sub:
             all_cands = vanity_candidates(e164, max_letters=7)
             for c in all_cands:
                 c.display = _format_display(e164, c.raw_letters)  # type: ignore[attr-defined]
-            # sort best-first by score (fallback already in descending order)
             all_cands.sort(key=lambda c: c.score, reverse=True)
             top5 = all_cands[:5]
             sub.put_annotation("candidate_count", len(all_cands))
             sub.put_metadata("top5", [c.display for c in top5])
 
-        # 3) Persist to DynamoDB (exercise requirement)
+        # 3) Persist to DynamoDB
         try:
             _put_record(e164, top5)
         except Exception:
             logger.exception("Failed to persist call record")
             metrics.add_metric("DdbWriteErrors", MetricUnit.Count, 1)
 
-        # 4) Emit metrics
+        # 4) Metrics
         matched_words = sum(1 for c in top5 if c.raw_letters.upper() in WORDS)
         metrics.add_dimension("env", ENV)
         metrics.add_dimension("service", "vanity-processor")
         metrics.add_metric("CallsProcessed", MetricUnit.Count, 1)
         metrics.add_metric("Top5MatchedWords", MetricUnit.Count, matched_words)
 
-        logger.info("Call processed", extra={"caller_e164": e164, "top3": [c.display for c in top5[:3]]})
+        # 5) Prepare outputs (robust to <3 candidates)
+        safe = [c.display for c in top5] + [""] * 3
+        o1, o2, o3 = safe[0], safe[1], safe[2]
 
-        # 5) Return top 3 for Connect
-        resp = response_for_connect(top5, limit=3)
-        # If somehow still empty, make absolutely sure we return *something*
-        if not any(resp.values()):
-            safe = (_format_display(e164, "CALLME"), _format_display(e164, "HELLO"), _format_display(e164, "THANKS"))
-            resp = {"option1": safe[0], "option2": safe[1], "option3": safe[2]}
-        return resp
+        # Build compact SSML (no indentation/newlines issues)
+        prompt_ssml = (
+            "<speak>"
+            "Here are your vanity options:"
+            "<break time=\"150ms\"/>"
+            f"<say-as interpret-as=\"characters\">{o1}</say-as>,"
+            "<break time=\"250ms\"/>"
+            f"<say-as interpret-as=\"characters\">{o2}</say-as>,"
+            "<break time=\"250ms\"/>"
+            f"and <say-as interpret-as=\"characters\">{o3}</say-as>."
+            "</speak>"
+        )
 
-    except Exception as exc:
+        logger.info("Call processed", extra={"caller_e164": e164, "top3": [o1, o2, o3]})
+
+        # Return BOTH shapes:
+        return {
+            "option1": o1,
+            "option2": o2,
+            "option3": o3,
+            "prompt_ssml": prompt_ssml,
+        }
+
+    except Exception:
         logger.exception("Unhandled error")
         metrics.add_metric("Errors", MetricUnit.Count, 1)
-        # Return empties to keep call flow alive
-        return {"option1": "", "option2": "", "option3": ""}
+        return {"option1": "", "option2": "", "option3": "", "prompt_ssml": ""}

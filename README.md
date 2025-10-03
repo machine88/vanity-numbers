@@ -1,9 +1,44 @@
-# Vanity Numbers for Amazon Connect (Python + Terraform)
+# Vanity Numbers on Amazon Connect
 
-**What it does:** An Amazon Connect contact flow invokes a Lambda that converts the caller’s phone number into memorable “vanity” options (e.g., `303-555-FLOWERS`). The Lambda stores the top 5 in DynamoDB and returns the top 3 for Connect to speak. A bonus web app shows the last 5 callers.
+## Overview
+This project demonstrates how to extend **Amazon Connect** with a custom vanity number service.  
+When a customer calls, their phone number is converted into **vanity word combinations**.  
+The system stores the top 5 options in DynamoDB, speaks the top 3 back to the caller, and also exposes them via a simple **web app**.
+
+Deliverables:
+- AWS Lambda (vanity processor, API)
+- DynamoDB table for storing results
+- Amazon Connect Contact Flow + Phone Number
+- Infrastructure as Code (Terraform)
+- Static web app (CloudFront + S3) showing the last 5 callers
+- Logging, tracing, and metrics via AWS Lambda Powertools
+
+---
 
 ## Architecture
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the diagram in `docs/diagram.png`.
+
+```mermaid
+flowchart LR
+  Caller[Inbound Caller] -->|PSTN| Connect[Amazon Connect Contact Flow]
+  Connect -->|Invoke Lambda| VanityLambda[Lambda: Vanity Processor]
+  VanityLambda -->|PutItem| DDB[(DynamoDB\nVanityCalls Table)]
+  VanityLambda -->|Return 3 options| Connect
+
+  Web[Browser] --> CF[CloudFront Distribution]
+  CF --> S3[S3 Static Site\nindex.html + app.js]
+  Web -->|GET /last5| API[API Gateway HTTP API]
+  API --> ApiLambda[Lambda: API /last5]
+  ApiLambda -->|Query last 5| DDB
+
+  subgraph Observability
+    VanityLambda -.-> Logs[CloudWatch Logs]
+    VanityLambda -.-> XRay[X-Ray]
+    VanityLambda -.-> Metrics[CloudWatch Metrics]
+    ApiLambda -.-> Logs
+    ApiLambda -.-> XRay
+    ApiLambda -.-> Metrics
+  end
+ ``` 
 
 ## “Best” Vanity (Scoring)
 - Prefer longest trailing real word (e.g., `FLOWERS` over `FLOW`).
@@ -42,3 +77,5 @@ terraform apply -var="connect_instance_id=YOUR-CONNECT-INSTANCE-ID"
 amazon-connect-6dee75a2f270/connect/martin-vanity-numbers
 
 /aws/connect/martin-vanity-numbers
+
+website  - https://d3rbp6ukovyfhw.cloudfront.net/

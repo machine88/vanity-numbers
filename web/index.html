@@ -6,17 +6,17 @@
   <title>Vanity Numbers – Last 5 Callers</title>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+  <meta name="theme-color" content="#0b0e12" />
 
   <style>
     :root{
-      /* Swap these to match final brand colors */
-      --brand-primary: #ff6a00;        /* accent (approx. orange) */
-      --brand-dark:    #111418;        /* near-black text */
-      --brand-mid:     #2a2f36;        /* dark UI */
-      --brand-muted:   #6b7280;        /* muted text */
-      --brand-bg:      #0b0e12;        /* page background */
-      --brand-card:    #12161c;        /* card background */
-      --brand-surface: #0e1217;        /* header/footer surface */
+      --brand-primary: #ff6a00;
+      --brand-dark:    #111418;
+      --brand-mid:     #2a2f36;
+      --brand-muted:   #6b7280;
+      --brand-bg:      #0b0e12;
+      --brand-card:    #12161c;
+      --brand-surface: #0e1217;
       --ring:          rgba(255,106,0,.35);
     }
 
@@ -114,7 +114,7 @@
 <body>
   <header>
     <div class="max">
-      <!-- Put your logo file at site/assets/ttec-logo.svg (or change the src below) -->
+      <!-- Put your logo file at site/assets/ttec-logo.svg -->
       <a class="logo" href="#">
         <img src="assets/ttec-logo.svg" alt="TTEC logo" onerror="this.style.display='none'">
         <span>Vanity Numbers</span>
@@ -139,5 +139,6 @@
   </main>
 
   <script src="app.js" defer></script>
+  <noscript><div style="color:#fff;text-align:center;margin:1rem;">This page requires JavaScript to load recent calls.</div></noscript>
 </body>
 </html>

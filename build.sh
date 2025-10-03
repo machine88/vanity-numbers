@@ -82,6 +82,7 @@ fi
 # ========= Web (optional) =========
 if [[ "$BUILD_WEB" == true ]]; then
   msg "Staging web assets..."
+  rsync -av --delete site/ infra/build/site/
   cp -f "$WEB_DIR/index.html" "$SITE_DIR/index.html"
   cp -f "$WEB_DIR/app.js"     "$SITE_DIR/app.js"
   msg "✓ site/ -> $SITE_DIR"

@@ -1,25 +1,39 @@
-# Terraform
-**/.terraform/
-**/terraform.tfstate
-**/terraform.tfstate.*
-**/crash.log
-**/*.tfvars
-!infra/terraform/terraform.tfvars.example
-**/*.backup
+# === Terraform ===
+*.tfstate
+*.tfstate.*
+*.backup
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+terraform.auto.tfvars
 
-# Build artifacts
+# === Build artifacts ===
 infra/build/
+*.zip
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+
+# === Node/Web ===
+web/node_modules/
+web/dist/
+web/build/
+
+# === Local temp ===
 .tmp_api_pkg/
 .tmp_vanity_pkg/
+tmp/
+*.log
+response.json
 
-# Python
-**/__pycache__/
-**/*.py[cod]
-.venv/
-.env
-
-# OS/editor
+# === OS / IDE junk ===
 .DS_Store
-*.swp
+Thumbs.db
 .idea/
 .vscode/
+*.swp

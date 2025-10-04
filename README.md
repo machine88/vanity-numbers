@@ -1,6 +1,6 @@
 # Vanity Numbers on Amazon Connect
 
-## Overview
+# Overview
 This project demonstrates how to extend **Amazon Connect** with a custom vanity number service.  
 When a customer calls, their phone number is converted into **vanity word combinations**.  
 The system stores the top 5 options in DynamoDB, speaks the top 3 back to the caller, and also exposes them via a simple **web app**.
@@ -20,7 +20,7 @@ This structure ensures reliability while still preferring meaningful, human-frie
 The process is stateless and repeatable—given the same input number, it will always return the same ranked set of candidates.
 ---
 
-## Architecture
+# Architecture
 
 * Amazon Connect: Invokes the vanity Lambda during a contact flow.
 * Lambda (vanity): Parses the caller phone, computes vanity candidates, returns SSML, and writes a compact record to DynamoDB.
@@ -79,19 +79,13 @@ flowchart LR
   DDB -. "query recent" .-> LambdaAPI -. "JSON {items:[...]}" .-> APIGW -.-> CF -.-> Browser
 ```
 
-## “Best” Vanity (Scoring)
-- Prefer longest trailing real word (e.g., `FLOWERS` over `FLOW`).
-- Prefer more letters (fewer leftover digits), bonus for memorable repeats.
-- Small penalty if digits `0` or `1` appear in the suffix (no letters).
-
-## Prerequisites
+# Prerequisites
 - AWS CLI v2 with a profile that has Administrator (or equivalent) in your target account.
 - Terraform (v1.5+).
 - Python 3.12 locally (build uses it).
 - Amazon Connect instance ID (for wiring the Lambda to a flow).
 
-## Build & Deploy and helpful commands
-
+# Build & Deploy and helpful commands
 
 ```shell
 # Build everything
@@ -137,7 +131,7 @@ aws cloudfront create-invalidation \
   --paths "/index.html" "/app.js" "/last5"
 ```
 
-## Test
+# Test
 
 ```shell
 aws  vanity-numbers % aws lambda invoke \
@@ -171,147 +165,34 @@ Result
 {
   "Items": [
     {
-      "caller_number": {
-        "S": "+13033788877"
-      },
-      "created_at": {
-        "S": "2025-10-03T21:59:55.320209+00:00"
-      },
-      "vanity_candidates": {
-        "L": [
-          {
-            "S": "303-378-TURP"
-          },
-          {
-            "S": "303-378-TTPS"
-          },
-          {
-            "S": "303-378-TTTPP"
-          }
-        ]
-      },
-      "pk": {
-        "S": "RECENT"
-      },
-      "raw": {
-        "L": [
-          {
-            "M": {
-              "score": {
-                "N": "5.87"
-              },
-              "letters": {
-                "S": "TURP"
-              },
-              "display": {
-                "S": "303-378-TURP"
-              }
-            }
-          },
-          {
-            "M": {
-              "score": {
-                "N": "5.3500000000000005"
-              },
-              "letters": {
-                "S": "TTPS"
-              },
-              "display": {
-                "S": "303-378-TTPS"
-              }
-            }
-          },
-          {
-            "M": {
-              "score": {
-                "N": "0"
-              },
-              "letters": {
-                "S": "TTTPP"
-              },
-              "display": {
-                "S": "303-378-TTTPP"
-              }
-            }
-          }
-        ]
-      },
-      "sk": {
-        "S": "TS#2025-10-03T21:59:55.320209+00:00"
-      }
+      "caller_number": "+13033788877",
+      "created_at": "2025-10-03T21:59:55.320209+00:00",
+      "vanity_candidates": [
+        "303-378-TURP",
+        "303-378-TTPS",
+        "303-378-TTTPP"
+      ],
+      "raw": [
+        { "letters": "TURP", "display": "303-378-TURP", "score": 5.87 },
+        { "letters": "TTPS", "display": "303-378-TTPS", "score": 5.35 },
+        { "letters": "TTTPP", "display": "303-378-TTTPP", "score": 0 }
+      ]
     },
     {
-      "caller_number": {
-        "S": "+15553569377"
-      },
-      "created_at": {
-        "S": "2025-10-03T21:59:39.090330+00:00"
-      },
-      "vanity_candidates": {
-        "L": [
-          {
-            "S": "555-356-FLOWERS"
-          },
-          {
-            "S": "555-356-MWDPP"
-          },
-          {
-            "S": "555-356-WDPP"
-          }
-        ]
-      },
-      "pk": {
-        "S": "RECENT"
-      },
-      "raw": {
-        "L": [
-          {
-            "M": {
-              "score": {
-                "N": "11.84"
-              },
-              "letters": {
-                "S": "FLOWERS"
-              },
-              "display": {
-                "S": "555-356-FLOWERS"
-              }
-            }
-          },
-          {
-            "M": {
-              "score": {
-                "N": "0"
-              },
-              "letters": {
-                "S": "MWDPP"
-              },
-              "display": {
-                "S": "555-356-MWDPP"
-              }
-            }
-          },
-          {
-            "M": {
-              "score": {
-                "N": "0"
-              },
-              "letters": {
-                "S": "WDPP"
-              },
-              "display": {
-                "S": "555-356-WDPP"
-              }
-            }
-          }
-        ]
-      },
-      "sk": {
-        "S": "TS#2025-10-03T21:59:39.090330+00:00"
-      }
+      "caller_number": "+15553569377",
+      "created_at": "2025-10-03T21:59:39.090330+00:00",
+      "vanity_candidates": [
+        "555-356-FLOWERS",
+        "555-356-MWDPP",
+        "555-356-WDPP"
+      ],
+      "raw": [
+        { "letters": "FLOWERS", "display": "555-356-FLOWERS", "score": 11.84 },
+        { "letters": "MWDPP", "display": "555-356-MWDPP", "score": 0 },
+        { "letters": "WDPP", "display": "555-356-WDPP", "score": 0 }
+      ]
     }
   ],
-  "Count": 2,
-  "ScannedCount": 2
-
+  "Count": 2
+}
 ```

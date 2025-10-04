@@ -5,40 +5,30 @@ This project demonstrates how to extend **Amazon Connect** with a custom vanity 
 When a customer calls, their phone number is converted into **vanity word combinations**.  
 The system stores the top 5 options in DynamoDB, speaks the top 3 back to the caller, and also exposes them via a simple **web app**.
 
-Deliverables:
-- AWS Lambda (vanity processor, API)
-- DynamoDB table for storing results
-- Amazon Connect Contact Flow + Phone Number
-- Infrastructure as Code (Terraform)
-- Static web app (CloudFront + S3) showing the last 5 callers
-- Logging, tracing, and metrics via AWS Lambda Powertools
+# Methodology and Word Selection & Scoring Algorithm.
 
+The vanity number generator works by mapping the digits of a caller’s phone number into their T9 keypad equivalents and 
+matching those digit patterns against a curated word list (words_4_7.jsonl.gz). The algorithm prioritizes longer matches
+first (7, then 6, then 5, down to 4 letters), since these tend to yield more meaningful vanity words. When multiple candidates are available,
+a scoring function ranks them: words gain points for length, frequency, and phonetic balance (e.g., inclusion of vowels makes them easier to pronounce).
+Penalties are applied for awkward repetitions or non-pronounceable letter combinations. 
+This ensures results like 555-356-FLOWERS are chosen ahead of low-value mappings like 555-356-MWDPP.
+
+If no dictionary matches are found, the algorithm falls back to deterministic substitutions by selecting representative 
+letters from the T9 digit map, guaranteeing that at least three candidate options are always returned. 
+This structure ensures reliability while still preferring meaningful, human-friendly results. 
+The process is stateless and repeatable—given the same input number, it will always return the same ranked set of candidates.
 ---
 
 ## Architecture
 
-```mermaid
-flowchart LR
-  Caller[Inbound Caller] -->|PSTN| Connect[Amazon Connect Contact Flow]
-  Connect -->|Invoke Lambda| VanityLambda[Lambda: Vanity Processor]
-  VanityLambda -->|PutItem| DDB[(DynamoDB\nVanityCalls Table)]
-  VanityLambda -->|Return 3 options| Connect
+* Amazon Connect: Invokes the vanity Lambda during a contact flow.
+* Lambda (vanity): Parses the caller phone, computes vanity candidates, returns SSML, and writes a compact record to DynamoDB.
+* DynamoDB (single table): vanity-numbers-VanityCalls stores “recent” items (sorted by timestamp).
+* Lambda (api_last5): Returns the last 5 items for the website.
+* API Gateway (HTTP API): Public /last5 endpoint consumed by the site.
+* S3 + CloudFront: Hosts index.html and app.js behind a CDN.
 
-  Web[Browser] --> CF[CloudFront Distribution]
-  CF --> S3[S3 Static Site\nindex.html + app.js]
-  Web -->|GET /last5| API[API Gateway HTTP API]
-  API --> ApiLambda[Lambda: API /last5]
-  ApiLambda -->|Query last 5| DDB
-
-  subgraph Observability
-    VanityLambda -.-> Logs[CloudWatch Logs]
-    VanityLambda -.-> XRay[X-Ray]
-    VanityLambda -.-> Metrics[CloudWatch Metrics]
-    ApiLambda -.-> Logs
-    ApiLambda -.-> XRay
-    ApiLambda -.-> Metrics
-  end
- ``` 
 ```mermaid
 flowchart LR
   subgraph Client["User"]
@@ -94,37 +84,234 @@ flowchart LR
 - Prefer more letters (fewer leftover digits), bonus for memorable repeats.
 - Small penalty if digits `0` or `1` appear in the suffix (no letters).
 
-## Prereqs
-- AWS account with **Amazon Connect** instance and a claimed phone number.
-- AWS CLI, Terraform ≥ 1.6, Python 3.12, `pip`, `zip`.
+## Prerequisites
+- AWS CLI v2 with a profile that has Administrator (or equivalent) in your target account.
+- Terraform (v1.5+).
+- Python 3.12 locally (build uses it).
+- Amazon Connect instance ID (for wiring the Lambda to a flow).
 
-## Build & Deploy
+## Build & Deploy and helpful commands
 
-```bash
-# From repo root
-rm -rf infra/build && mkdir -p infra/build tmp tmp_api infra/build/site
 
-# Vanity Lambda
-cd lambda
-pip install -r requirements.txt -t ../tmp
-cp handler.py vanity.py model.py observability.py words_small.txt ../tmp/
-cd ../tmp && zip -r ../infra/build/lambda_vanity.zip . && cd ..
+```shell
+# Build everything
+bash build.sh
 
-# API Lambda
-cp bonus-webapp/api_handler.py tmp_api/
-cd tmp_api && zip -r ../infra/build/lambda_api.zip . && cd ..
-
-# Web site
-cp web/index.html infra/build/site/
-cp web/app.js infra/build/site/
-
-# Terraform
+# Deploy infra (Terraform)
 cd infra/terraform
-terraform init
-terraform apply -var="connect_instance_id=YOUR-CONNECT-INSTANCE-ID"
+terraform apply --auto-approve -var="connect_instance_id=<ID>"
+
+# Update Lambda code from local zips
+aws lambda update-function-code --function-name vanity-numbers-vanity \
+  --zip-file fileb://infra/build/lambda_vanity.zip
+aws lambda update-function-code --function-name vanity-numbers-api-last5 \
+  --zip-file fileb://infra/build/lambda_api.zip
+
+# Invalidate CloudFront cache for site & API path
+aws cloudfront create-invalidation --distribution-id <DIST_ID> \
+  --paths "/index.html" "/app.js" "/last5"
+
+# Call vanity function directly
+aws lambda invoke --function-name vanity-numbers-vanity \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"phone":"+15553569377"}' /tmp/vanity.json && cat /tmp/vanity.json
+
+# Hit the API used by the website
+curl -s "https://<api-id>.execute-api.us-west-2.amazonaws.com/last5?cb=$(date +%s)" | jq .
+
+# Query last 5 from Dynamo
+aws dynamodb query --table-name vanity-numbers-VanityCalls \
+  --key-condition-expression 'pk = :p' \
+  --expression-attribute-values '{":p":{"S":"RECENT"}}' \
+  --no-scan-index-forward --limit 5 | jq .
+
+# Tail logs
+aws logs tail /aws/lambda/vanity-numbers-vanity --since 10m
+aws logs tail /aws/lambda/vanity-numbers-api-last5 --since 10m
 ```
-amazon-connect-6dee75a2f270/connect/martin-vanity-numbers
+S/HTML changes, invalidate CloudFront:
+website  - 
+```shell
+aws cloudfront create-invalidation \
+  --distribution-id <DIST_ID> \
+  --paths "/index.html" "/app.js" "/last5"
+```
 
-/aws/connect/martin-vanity-numbers
+## Test
 
-website  - https://d3rbp6ukovyfhw.cloudfront.net/
+```shell
+aws  vanity-numbers % aws lambda invoke \
+  --function-name vanity-numbers-vanity \
+  --region us-west-2 \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"phone":"+15553569377"}' \
+  /tmp/vanity.json && cat /tmp/vanity.json
+```
+Response
+```json
+{"option1": "555-356-FLOWERS", "option2": "555-356-MWDPP", "option3": "555-356-WDPP", "prompt_ssml": "<speak>Here are your vanity options:<break time=\"250ms\"/><say-as interpret-as=\"characters\">555-356-FLOWERS</say-as><break time=\"250ms\"/><say-as interpret-as=\"characters\">555-356-MWDPP</say-as><break time=\"250ms\"/><say-as interpret-as=\"characters\">555-356-WDPP</say-as>.</speak>"}%   
+```
+Last 5 API results (sued by the site)
+```shell
+curl -s "https://<api-id>.execute-api.us-west-2.amazonaws.com/last5?cb=$(date +%s)" | jq .
+```
+DynamoDB table scan
+```shell
+aws dynamodb query \
+  --table-name vanity-numbers-VanityCalls \
+  --key-condition-expression 'pk = :p' \
+  --expression-attribute-values '{":p":{"S":"RECENT"}}' \
+  --consistent-read \
+  --no-scan-index-forward \
+  --limit 5 | jq .
+```
+
+Result
+```json
+{
+  "Items": [
+    {
+      "caller_number": {
+        "S": "+13033788877"
+      },
+      "created_at": {
+        "S": "2025-10-03T21:59:55.320209+00:00"
+      },
+      "vanity_candidates": {
+        "L": [
+          {
+            "S": "303-378-TURP"
+          },
+          {
+            "S": "303-378-TTPS"
+          },
+          {
+            "S": "303-378-TTTPP"
+          }
+        ]
+      },
+      "pk": {
+        "S": "RECENT"
+      },
+      "raw": {
+        "L": [
+          {
+            "M": {
+              "score": {
+                "N": "5.87"
+              },
+              "letters": {
+                "S": "TURP"
+              },
+              "display": {
+                "S": "303-378-TURP"
+              }
+            }
+          },
+          {
+            "M": {
+              "score": {
+                "N": "5.3500000000000005"
+              },
+              "letters": {
+                "S": "TTPS"
+              },
+              "display": {
+                "S": "303-378-TTPS"
+              }
+            }
+          },
+          {
+            "M": {
+              "score": {
+                "N": "0"
+              },
+              "letters": {
+                "S": "TTTPP"
+              },
+              "display": {
+                "S": "303-378-TTTPP"
+              }
+            }
+          }
+        ]
+      },
+      "sk": {
+        "S": "TS#2025-10-03T21:59:55.320209+00:00"
+      }
+    },
+    {
+      "caller_number": {
+        "S": "+15553569377"
+      },
+      "created_at": {
+        "S": "2025-10-03T21:59:39.090330+00:00"
+      },
+      "vanity_candidates": {
+        "L": [
+          {
+            "S": "555-356-FLOWERS"
+          },
+          {
+            "S": "555-356-MWDPP"
+          },
+          {
+            "S": "555-356-WDPP"
+          }
+        ]
+      },
+      "pk": {
+        "S": "RECENT"
+      },
+      "raw": {
+        "L": [
+          {
+            "M": {
+              "score": {
+                "N": "11.84"
+              },
+              "letters": {
+                "S": "FLOWERS"
+              },
+              "display": {
+                "S": "555-356-FLOWERS"
+              }
+            }
+          },
+          {
+            "M": {
+              "score": {
+                "N": "0"
+              },
+              "letters": {
+                "S": "MWDPP"
+              },
+              "display": {
+                "S": "555-356-MWDPP"
+              }
+            }
+          },
+          {
+            "M": {
+              "score": {
+                "N": "0"
+              },
+              "letters": {
+                "S": "WDPP"
+              },
+              "display": {
+                "S": "555-356-WDPP"
+              }
+            }
+          }
+        ]
+      },
+      "sk": {
+        "S": "TS#2025-10-03T21:59:39.090330+00:00"
+      }
+    }
+  ],
+  "Count": 2,
+  "ScannedCount": 2
+
+```
